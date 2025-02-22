@@ -1,158 +1,101 @@
-import { useState } from 'react'
-import { useAppKit } from '@reown/appkit/react'
-import { useAccount, useWalletClient, useSwitchChain } from 'wagmi'
-import { parseUnits } from 'viem'
+import { useState, useMemo, useEffect } from 'react'
+import { DashboardData } from './types/dashboard'
+import { calculateAll, formatMoney, formatPercentage } from './utils/calculations'
+import { InputPanel } from './components/InputPanel'
+import { CashFlowCards } from './components/CashFlowCards'
+import { LoanChart } from './components/LoanChart'
+import { ScenarioComparison } from './components/ScenarioComparison'
 
-const PROTOCCTPCONTRACTS: Record<number, `0x${string}`> = {
-  11155111: '0xC46bc942ca64aed4Eb0B1Af21347944b85EDCb04', // Ethereum Sepolia
-  421614: '0x040F70B724F1E7f8509848e750bbF10e20b73f60',   // Arbitrum Sepolia
-  43113: '0x02986E15f847F4dc509F01B781E20F95da851b44'     // Avalanche Fuji
-}
+const defaultData: DashboardData = {
+  // Property details
+  housePrice: 2500000,
+  downPayment: 500000,
+  primeRate: 11.75,
+  premiumAbovePrime: 2,
+  loanTermYears: 20,
 
-const CHAIN_NAMES: Record<number, string> = {
-  11155111: 'Sepolia',
-  421614: 'Arbitrum Sepolia',
-  43113: 'Avalanche Fuji'
+  // Income & expenses
+  monthlyIncomeZAR: 45000,
+  monthlyIncomeUSD: 2000,
+  exchangeRate: 18.5,
+  rentalIncome: 18000,
+  monthlyRent: 12000,
+
+  // Investment settings
+  investmentReturnRate: 8, // 8% annual return
+
+  // Monthly expenses
+  personalAllocation: 15000,
+  personalExpenses: 8000,
+  propertyLevies: 3000
 }
 
 function App() {
-  const appKit = useAppKit()
-  const { address, chainId } = useAccount()
-  const { data: walletClient } = useWalletClient()
-  const { switchChain } = useSwitchChain()
-  const [amount, setAmount] = useState('')
-  const [sourceChain, setSourceChain] = useState<number>()
-  const [destinationChain, setDestinationChain] = useState<number>()
-
-  const handleTransfer = async () => {
-    if (!address || !sourceChain || !destinationChain || !walletClient) {
-      console.error('Missing required information')
-      return
-    }
-
+  // Initialize state from localStorage or default
+  const [data, setData] = useState<DashboardData>(() => {
     try {
-      const requiredAmount = parseUnits(amount || '0', 6)
-      const contractAddress = PROTOCCTPCONTRACTS[sourceChain]
-
-      const transferHash = await walletClient.writeContract({
-        address: contractAddress,
-        abi: [{
-          name: 'send',
-          type: 'function',
-          stateMutability: 'nonpayable',
-          inputs: [
-            { name: 'destinationChainId', type: 'uint256' },
-            { name: 'recipient', type: 'address' },
-            { name: 'amount', type: 'uint256' }
-          ],
-          outputs: []
-        }],
-        functionName: 'send',
-        args: [BigInt(destinationChain), address, requiredAmount]
-      })
-
-      console.log('Transfer hash:', transferHash)
+      const saved = localStorage.getItem('propertyDashboardData')
+      return saved ? JSON.parse(saved) : defaultData
     } catch (error) {
-      console.error('Transfer error:', error)
+      console.error('Failed to load saved data:', error)
+      return defaultData
     }
+  })
+
+  const handleDataChange = (newData: DashboardData) => {
+    console.log('Data updated:', newData)
+    setData(newData)
   }
 
-  const handleSwitchNetwork = async () => {
-    if (!sourceChain) return
+  // Save to localStorage whenever data changes
+  useEffect(() => {
     try {
-      await switchChain({ chainId: sourceChain })
+      localStorage.setItem('propertyDashboardData', JSON.stringify(data))
     } catch (error) {
-      console.error('Failed to switch network:', error)
+      console.error('Failed to save data:', error)
     }
-  }
+  }, [data])
+
+  const calculations = useMemo(() => {
+    console.log('Recalculating with data:', data)
+    return calculateAll(data)
+  }, [data])
 
   return (
-    <div className="min-h-screen bg-white">
-      <div className="max-w-lg mx-auto p-4">
-        <h1 className="text-2xl font-bold mb-6">Reown Bridge</h1>
+    <div className="min-h-screen bg-gray-900 py-8 text-gray-100">
+      <div className="max-w-7xl mx-auto px-4">
+        <h1 className="text-3xl font-bold mb-4 text-blue-400">🏠 Property Financial Analysis</h1>
 
-        {address ? (
-          <div className="mb-4 flex items-center gap-2">
-            <span className="text-sm font-mono">{address.slice(0, 6)}...{address.slice(-4)}</span>
-            <button
-              onClick={() => appKit.open()}
-              className="text-sm border border-gray-300 px-2 py-1 rounded hover:bg-gray-50"
-            >
-              Change
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={() => appKit.open()}
-            className="mb-4 border border-gray-300 px-3 py-1.5 rounded hover:bg-gray-50"
-          >
-            Connect
-          </button>
-        )}
-
-        <div className="space-y-4">
-          <div>
-            <label className="block mb-1 text-sm">Source Chain</label>
-            <select
-              value={sourceChain}
-              onChange={(e) => setSourceChain(Number(e.target.value))}
-              className="w-full border border-gray-300 rounded px-2 py-1.5 bg-white"
-            >
-              <option value="">Select source chain</option>
-              <option value="11155111">Sepolia</option>
-              <option value="421614">Arbitrum Sepolia</option>
-              <option value="43113">Avalanche Fuji</option>
-            </select>
-          </div>
-
-          {sourceChain && chainId !== sourceChain && (
-            <button
-              onClick={handleSwitchNetwork}
-              className="w-full border border-gray-300 rounded px-3 py-1.5 hover:bg-gray-50"
-            >
-              Switch to {CHAIN_NAMES[sourceChain]}
-            </button>
-          )}
-
-          <div>
-            <label className="block mb-1 text-sm">Destination Chain</label>
-            <select
-              value={destinationChain}
-              onChange={(e) => setDestinationChain(Number(e.target.value))}
-              disabled={!sourceChain}
-              className="w-full border border-gray-300 rounded px-2 py-1.5 bg-white disabled:bg-gray-100 disabled:text-gray-500"
-            >
-              <option value="">Select destination chain</option>
-              {sourceChain !== 11155111 && <option value="11155111">Sepolia</option>}
-              {sourceChain !== 421614 && <option value="421614">Arbitrum Sepolia</option>}
-              {sourceChain !== 43113 && <option value="43113">Avalanche Fuji</option>}
-            </select>
-          </div>
-
-          <div>
-            <label className="block mb-1 text-sm">Amount</label>
-            <div className="flex items-center border border-gray-300 rounded bg-white">
-              <input
-                type="number"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                placeholder="0.00"
-                min="0"
-                step="0.000001"
-                className="flex-1 px-2 py-1.5 focus:outline-none"
-              />
-              <span className="pr-2 text-sm text-gray-500">USDC</span>
+        {/* Info Section */}
+        <div className="bg-gray-800 rounded-lg shadow-lg border border-gray-700 p-6 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div>
+              <h3 className="text-lg font-bold text-blue-400 mb-2">Buy and Live In</h3>
+              <p className="text-gray-300">Purchase the property with current down payment and live in it. Use extra cash to accelerate bond repayment.</p>
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-green-400 mb-2">Buy and Rent Out</h3>
+              <p className="text-gray-300">Buy the property but rent it out while renting elsewhere yourself. Use rental income to accelerate bond repayment.</p>
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-purple-400 mb-2">Rent and Save</h3>
+              <p className="text-gray-300">Rent a property while saving and investing for a larger down payment. Buy later with better loan terms.</p>
             </div>
           </div>
-
-          <button
-            onClick={handleTransfer}
-            disabled={!sourceChain || !destinationChain || !amount || !address || chainId !== sourceChain}
-            className="w-full border border-gray-300 rounded px-3 py-1.5 hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400"
-          >
-            Bridge
-          </button>
         </div>
+
+        {/* Input Panel */}
+        <InputPanel data={data} onChange={handleDataChange} />
+
+        {/* Cash Flow Analysis */}
+        <CashFlowCards data={data} calculations={calculations} />
+
+        {/* Scenario Comparison */}
+        <ScenarioComparison data={data} calculations={calculations} />
+
+        {/* Visualization */}
+        <LoanChart data={data} calculations={calculations} />
+
       </div>
     </div>
   )

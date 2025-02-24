@@ -1,28 +1,341 @@
-import { DashboardData, PropertyCalculations } from '../types/dashboard'
-import { calculateSavingsProjection } from '../types/savings'
+import {
+    DashboardData,
+    PropertyCalculations,
+    TaxCalculation,
+    TaxBracket,
+    IncomeBreakdown,
+    LoanProjection,
+    SavingsProjection,
+    SavingsMilestone,
+    SensitivityAnalysis,
+    ScenarioAnalysis,
+    RentalSensitivity,
+    VacancyImpact,
+    ExchangeRateImpact,
+    IncomeSensitivity
+} from '../types/dashboard'
+
+// Tax calculation helper
+export function calculateTaxBreakdown(annualIncome: number): TaxCalculation {
+    const primaryRebate = 17235
+    const brackets: TaxBracket[] = [
+        { threshold: 0, rate: 18, amount: 0 },
+        { threshold: 237100, rate: 26, amount: 42678 },
+        { threshold: 370500, rate: 31, amount: 77362 },
+        { threshold: 512800, rate: 36, amount: 121475 },
+        { threshold: 673000, rate: 39, amount: 179147 },
+        { threshold: 857900, rate: 41, amount: 251258 },
+        { threshold: 1817000, rate: 45, amount: 644489 }
+    ]
+
+    let taxBeforeRebate = 0
+    const applicableBracket = brackets.reverse().find(b => annualIncome > b.threshold)
+
+    if (applicableBracket) {
+        const baseAmount = applicableBracket.amount
+        const excessAmount = annualIncome - applicableBracket.threshold
+        taxBeforeRebate = baseAmount + (excessAmount * (applicableBracket.rate / 100))
+    }
+
+    const annualTaxAfterRebate = Math.max(0, taxBeforeRebate - primaryRebate)
+    const monthlyTax = annualTaxAfterRebate / 12
+    const effectiveRate = (annualTaxAfterRebate / annualIncome) * 100
+
+    return {
+        annualGross: annualIncome,
+        brackets: brackets.reverse(),
+        rebate: primaryRebate,
+        monthlyTax,
+        effectiveRate
+    }
+}
+
+// Income breakdown calculation
+export function calculateIncomeBreakdown(data: DashboardData): IncomeBreakdown {
+    const zarIncome = data.monthlyIncomeZAR
+    const usdAmount = data.monthlyIncomeUSD
+    const exchangeRate = data.exchangeRate
+    const usdIncome = usdAmount * exchangeRate
+    const totalGross = zarIncome + usdIncome
+    const taxCalculation = calculateTaxBreakdown(totalGross * 12)
+    const netIncome = totalGross - taxCalculation.monthlyTax
+
+    return {
+        zarIncome,
+        usdIncome,
+        usdAmount,
+        exchangeRate,
+        totalGross,
+        taxCalculation,
+        netIncome
+    }
+}
+
+// Loan projection calculation
+export function calculateLoanProjection(
+    loanAmount: number,
+    interestRate: number,
+    termYears: number,
+    extraPayment: number
+): LoanProjection {
+    const monthlyRate = interestRate / 100 / 12
+    const totalMonths = termYears * 12
+    const MAX_ITERATIONS = totalMonths * 2 // Safety limit
+
+    // Calculate standard payment
+    const monthlyPayment = loanAmount *
+        (monthlyRate * Math.pow(1 + monthlyRate, totalMonths)) /
+        (Math.pow(1 + monthlyRate, totalMonths) - 1)
+
+    // Original loan calculations
+    const originalTotalPayments = monthlyPayment * totalMonths
+    const originalTotalInterest = originalTotalPayments - loanAmount
+
+    // Validate minimum payment
+    const minPayment = loanAmount * monthlyRate // Minimum to cover interest
+    if (monthlyPayment + extraPayment <= minPayment) {
+        return {
+            original: {
+                totalInterest: originalTotalInterest,
+                totalPayments: originalTotalPayments,
+                term: totalMonths
+            },
+            accelerated: {
+                totalInterest: originalTotalInterest,
+                totalPayments: originalTotalPayments,
+                newTerm: totalMonths,
+                yearsSaved: 0,
+                interestSaved: 0
+            }
+        }
+    }
+
+    // Accelerated loan calculations
+    let balance = loanAmount
+    let months = 0
+    let totalInterest = 0
+    let lastBalance = balance
+    let stuckCount = 0
+
+    while (balance > 0 && months < MAX_ITERATIONS) {
+        const interestPayment = balance * monthlyRate
+        totalInterest += interestPayment
+        const principalPayment = monthlyPayment + extraPayment - interestPayment
+        balance -= principalPayment
+
+        // Check if we're stuck (balance not decreasing meaningfully)
+        if (Math.abs(balance - lastBalance) < 0.01) {
+            stuckCount++
+            if (stuckCount > 3) break; // Exit if stuck for too long
+        } else {
+            stuckCount = 0
+        }
+        lastBalance = balance
+        months++
+    }
+
+    // If we hit the safety limit, return original projection
+    if (months >= MAX_ITERATIONS || stuckCount > 3) {
+        return {
+            original: {
+                totalInterest: originalTotalInterest,
+                totalPayments: originalTotalPayments,
+                term: totalMonths
+            },
+            accelerated: {
+                totalInterest: originalTotalInterest,
+                totalPayments: originalTotalPayments,
+                newTerm: totalMonths,
+                yearsSaved: 0,
+                interestSaved: 0
+            }
+        }
+    }
+
+    return {
+        original: {
+            totalInterest: originalTotalInterest,
+            totalPayments: originalTotalPayments,
+            term: totalMonths
+        },
+        accelerated: {
+            totalInterest,
+            totalPayments: totalInterest + loanAmount,
+            newTerm: months,
+            yearsSaved: (totalMonths - months) / 12,
+            interestSaved: originalTotalInterest - totalInterest
+        }
+    }
+}
+
+// Savings projection with investment returns
+export function calculateSavingsProjection(
+    current: number,
+    target: number,
+    monthlyContribution: number,
+    annualReturn: number
+): SavingsProjection {
+    const monthlyReturn = annualReturn / 12 / 100
+    const milestones: SavingsMilestone[] = []
+
+    let standardAmount = current
+    let withReturns = current
+    let monthsToTargetStandard = 0
+    let monthsToTargetWithReturns = 0
+
+    for (let month = 0; month <= 60; month++) { // Project up to 5 years
+        if (standardAmount < target) {
+            standardAmount += monthlyContribution
+            monthsToTargetStandard = month + 1
+        }
+
+        if (withReturns < target) {
+            withReturns = withReturns * (1 + monthlyReturn) + monthlyContribution
+            monthsToTargetWithReturns = month + 1
+        }
+
+        if (month % 12 === 0 || standardAmount >= target || withReturns >= target) {
+            milestones.push({
+                month,
+                standardAmount,
+                withReturns
+            })
+        }
+    }
+
+    return {
+        current,
+        target,
+        monthlyContribution,
+        monthsToTarget: {
+            standard: monthsToTargetStandard,
+            withReturns: monthsToTargetWithReturns
+        },
+        milestones
+    }
+}
+
+// Simplified time impact calculation
+function estimateTimeImpact(
+    loanAmount: number,
+    monthlyPayment: number,
+    extraPayment: number,
+    interestRate: number,
+    originalTerm: number
+): number {
+    const monthlyRate = interestRate / 100 / 12
+
+    // Estimate using payment ratio
+    const totalPayment = monthlyPayment + extraPayment
+    const paymentRatio = totalPayment / monthlyPayment
+
+    if (paymentRatio <= 1) return 0
+
+    // Rough estimation based on payment increase
+    const estimatedTerm = originalTerm / paymentRatio
+    return (originalTerm - estimatedTerm) / 12
+}
+
+// Sensitivity analysis calculations
+export function calculateSensitivityAnalysis(data: DashboardData, baseCalculations: PropertyCalculations): SensitivityAnalysis {
+    const baseRental = data.rentalIncome
+    const interestRate = data.primeRate + data.premiumAbovePrime
+    const monthlyRate = interestRate / 100 / 12
+    const totalMonths = data.loanTermYears * 12
+
+    // Calculate base monthly payment once
+    const baseMonthlyPayment = baseCalculations.loanAmount *
+        (monthlyRate * Math.pow(1 + monthlyRate, totalMonths)) /
+        (Math.pow(1 + monthlyRate, totalMonths) - 1)
+
+    // Calculate rental variations
+    const variations: RentalSensitivity[] = [-15, -10, -5, 0, 5, 10, 15].map(percent => {
+        const variation = percent / 100
+        const income = baseRental * (1 + variation)
+        const available = baseCalculations.rentOutAvailable + (income - baseRental)
+        const extraPayment = available - baseCalculations.rentOutAvailable
+
+        const timeImpact = estimateTimeImpact(
+            baseCalculations.loanAmount,
+            baseMonthlyPayment,
+            extraPayment,
+            interestRate,
+            totalMonths
+        )
+
+        return {
+            variation: percent,
+            income,
+            available,
+            timeImpact
+        }
+    })
+
+    // Calculate vacancy impact
+    const vacancy: VacancyImpact[] = [1, 2].map(months => {
+        const lostIncome = baseRental * months
+        const monthlyImpact = lostIncome / 12
+        return {
+            months,
+            lostIncome,
+            monthlyImpact,
+            newAvailable: baseCalculations.rentOutAvailable - monthlyImpact
+        }
+    })
+
+    // Calculate exchange rate impact
+    const baseRate = data.exchangeRate
+    const exchangeRate: ExchangeRateImpact[] = [
+        { rate: baseRate * 0.9 },
+        { rate: baseRate * 0.95 },
+        { rate: baseRate },
+        { rate: baseRate * 1.05 },
+        { rate: baseRate * 1.1 }
+    ].map(({ rate }) => {
+        const zarValue = data.monthlyIncomeUSD * rate
+        const netChange = zarValue - (data.monthlyIncomeUSD * baseRate)
+        return {
+            rate,
+            zarValue,
+            netChange,
+            newAvailable: baseCalculations.rentOutAvailable + netChange
+        }
+    })
+
+    // Calculate USD income variations
+    const baseUSD = data.monthlyIncomeUSD
+    const usdIncome: IncomeSensitivity[] = [-10, -5, 0, 5, 10].map(percent => {
+        const amount = baseUSD * (1 + percent / 100)
+        const zarValue = amount * data.exchangeRate
+        return {
+            amount,
+            zarValue,
+            newAvailable: baseCalculations.rentOutAvailable + (zarValue - (baseUSD * data.exchangeRate))
+        }
+    })
+
+    return {
+        rental: {
+            baseIncome: baseRental,
+            variations,
+            vacancy
+        },
+        income: {
+            exchangeRate,
+            usdIncome
+        }
+    }
+}
 
 export function calculateAll(data: DashboardData): PropertyCalculations {
-    // Basic calculations
-    const loanAmount = data.housePrice - data.downPayment
-    const interestRate = data.primeRate + data.premiumAbovePrime
-    const monthlyInterestRate = interestRate / 100 / 12
-    const totalPayments = data.loanTermYears * 12
+    // Income calculations
     const totalMonthlyIncome = data.monthlyIncomeZAR + (data.monthlyIncomeUSD * data.exchangeRate)
-
-    // Monthly bond payment calculation
-    const monthlyBondPayment = loanAmount *
-        (monthlyInterestRate * Math.pow(1 + monthlyInterestRate, totalPayments)) /
-        (Math.pow(1 + monthlyInterestRate, totalPayments) - 1)
-
-    // Property expenses
-    const propertyExpenses = data.propertyLevies
 
     // Tax calculation (2024/2025 tax tables)
     const annualIncome = totalMonthlyIncome * 12
-    const primaryRebate = 17235 // Primary rebate for 2024/2025
+    const primaryRebate = 17235
     let taxBeforeRebate = 0
 
-    // Calculate tax based on annual income brackets
     if (annualIncome <= 237100) {
         taxBeforeRebate = annualIncome * 0.18
     } else if (annualIncome <= 370500) {
@@ -39,125 +352,81 @@ export function calculateAll(data: DashboardData): PropertyCalculations {
         taxBeforeRebate = 644489 + (annualIncome - 1817000) * 0.45
     }
 
-    // Apply rebate and convert to monthly
     const annualTaxAfterRebate = Math.max(0, taxBeforeRebate - primaryRebate)
     const monthlyTax = annualTaxAfterRebate / 12
     const monthlyNetIncome = totalMonthlyIncome - monthlyTax
 
-    // Available acceleration amounts for different scenarios
-    // 1. Buy and Live In (standard)
-    const standardAvailable = monthlyNetIncome - monthlyBondPayment - propertyExpenses - data.personalAllocation
+    // Property calculations
+    const loanAmount = data.housePrice - data.downPayment
+    const interestRate = data.primeRate + data.premiumAbovePrime
+    const monthlyInterestRate = interestRate / 100 / 12
+    const totalPayments = data.loanTermYears * 12
 
-    // 2. Buy and Rent Out (while renting elsewhere)
-    const rentOutAvailable = (totalMonthlyIncome + data.rentalIncome) - monthlyTax -
-        monthlyBondPayment - propertyExpenses - (data.monthlyRent || 0) - data.personalAllocation - data.personalExpenses
+    // Monthly bond payment
+    const monthlyBondPayment = loanAmount *
+        (monthlyInterestRate * Math.pow(1 + monthlyInterestRate, totalPayments)) /
+        (Math.pow(1 + monthlyInterestRate, totalPayments) - 1)
 
-    // 3. Rent and Save
-    const rentAndSaveAvailable = monthlyNetIncome - (data.monthlyRent || 0) - data.personalAllocation
+    // Total monthly housing costs
+    const totalHousingCost = monthlyBondPayment + data.propertyLevies
 
-    // Calculate loan terms and savings for each scenario
-    function calculateScenarioImpact(monthlyAcceleration: number) {
-        if (monthlyAcceleration <= 0) return {
-            newTerm: totalPayments,
-            interestSaved: 0,
-            timeSaved: 0
-        }
+    // Affordability metrics
+    const housingToIncomeRatio = (totalHousingCost / monthlyNetIncome) * 100
+    const disposableAfterHousing = monthlyNetIncome - totalHousingCost - data.personalExpenses
+    const affordabilityStatus = housingToIncomeRatio <= 30 ? 'Good' : housingToIncomeRatio <= 40 ? 'Moderate' : 'High'
 
-        let balance = loanAmount
-        let months = 0
-        while (balance > 0 && months < 360) {
-            const interestPayment = balance * monthlyInterestRate
-            const principalPayment = monthlyBondPayment - interestPayment
-            balance -= (principalPayment + monthlyAcceleration)
-            months++
-            if (balance <= 0) break
-        }
+    // Current situation
+    const currentRent = data.monthlyRent || 0
+    const monthlySavings = monthlyNetIncome - currentRent - data.personalExpenses - data.personalAllocation
+    const currentSavings = data.currentSavings || 0
+    const targetAmount = data.downPayment // Use the desired down payment as target
+    const remainingAmount = targetAmount - currentSavings
+    const monthsToTarget = Math.ceil(remainingAmount / monthlySavings)
+    const projectedDate = new Date()
+    projectedDate.setMonth(projectedDate.getMonth() + monthsToTarget)
+    const downPaymentShortfall = targetAmount - currentSavings
 
-        const originalInterest = (monthlyBondPayment * totalPayments) - loanAmount
-        const newInterest = (monthlyBondPayment * months) - loanAmount
-        const interestSaved = originalInterest - newInterest
-        const timeSaved = data.loanTermYears - (months / 12)
+    // Calculate available money in different scenarios
+    const standardAvailable = monthlyNetIncome - totalHousingCost - data.personalExpenses - data.personalAllocation
+    const rentOutAvailable = monthlyNetIncome + data.rentalIncome - totalHousingCost - data.personalExpenses - data.personalAllocation - currentRent
+    const rentAndSaveAvailable = monthlyNetIncome - currentRent - data.personalExpenses - data.personalAllocation
 
-        return { newTerm: months, interestSaved, timeSaved }
-    }
-
-    const standardScenario = calculateScenarioImpact(standardAvailable)
-    const rentOutScenario = calculateScenarioImpact(rentOutAvailable)
-
-    // Calculate ratios
-    const bondToGrossIncomeRatio = (monthlyBondPayment / totalMonthlyIncome) * 100
-    const bondToNetIncomeRatio = (monthlyBondPayment / monthlyNetIncome) * 100
-
-    // Additional metrics
-    const accelerationMultiplier = rentOutAvailable / standardAvailable
-    const timeSaved = rentOutScenario.timeSaved
-    const additionalInterestSaved = rentOutScenario.interestSaved - standardScenario.interestSaved
-
-    // Calculate rent & save projections
-    const annualReturnRate = data.investmentReturnRate / 100
-    const monthlyReturnRate = Math.pow(1 + annualReturnRate, 1 / 12) - 1
-
-    // Function to calculate future value with monthly contributions
-    function calculateFutureValue(monthlyContribution: number, months: number): number {
-        return monthlyContribution * (Math.pow(1 + monthlyReturnRate, months) - 1) / monthlyReturnRate
-    }
-
-    // Function to calculate time to reach target with monthly contributions
-    function calculateTimeToTarget(target: number, monthlyContribution: number): number {
-        return Math.log(target * monthlyReturnRate / monthlyContribution + 1) / Math.log(1 + monthlyReturnRate)
-    }
-
-    // Calculate savings projections
-    const monthsToGoal = calculateTimeToTarget(data.downPayment, rentAndSaveAvailable)
-    const yearsToGoal = monthsToGoal / 12
-
-    // Calculate 5-year projection
-    const fiveYearTotal = calculateFutureValue(rentAndSaveAvailable, 60)
-    const fiveYearContributions = rentAndSaveAvailable * 60
-    const fiveYearReturns = fiveYearTotal - fiveYearContributions
-
-    // Calculate required monthly savings for different timeframes
-    const requiredMonthly3Years = data.downPayment / (36 * (1 + (annualReturnRate * 3) / 2))
-    const requiredMonthly5Years = data.downPayment / (60 * (1 + (annualReturnRate * 5) / 2))
-
-    // Estimate future costs (assuming 6% annual inflation)
-    const inflationRate = 0.06
-    const futureHousePrice = data.housePrice * Math.pow(1 + inflationRate, yearsToGoal)
-    const futureDownPayment = data.downPayment * Math.pow(1 + inflationRate, yearsToGoal)
-
-    const rentAndSave = {
-        monthlyAvailable: rentAndSaveAvailable,
-        timeToDownPayment: monthsToGoal,
-        yearsToGoal: yearsToGoal,
-        fiveYearTotal: fiveYearTotal,
-        fiveYearReturns: fiveYearReturns,
-        requiredMonthly3Years: requiredMonthly3Years,
-        requiredMonthly5Years: requiredMonthly5Years,
-        progressToGoal: (fiveYearTotal / data.downPayment) * 100,
-        futureHousePrice: futureHousePrice,
-        futureDownPayment: futureDownPayment,
-        effectiveReturn: ((fiveYearTotal / fiveYearContributions - 1) * 100) / 5 // Annualized return
-    }
+    // Calculate key metrics
+    const rentalYield = (data.rentalIncome * 12 / data.housePrice) * 100
+    const bondCoverage = (data.rentalIncome / monthlyBondPayment) * 100
+    const usdDependence = ((data.monthlyIncomeUSD * data.exchangeRate) / totalMonthlyIncome) * 100
+    const interestSensitivity = loanAmount * (0.02 / 100) / 12 // Impact of 2% rate increase
 
     return {
-        loanAmount,
-        interestRate,
-        monthlyBondPayment,
-        propertyExpenses,
+        // Basic metrics
         totalMonthlyIncome,
-        monthlyTax,
         monthlyNetIncome,
+        monthlyTax,
+        loanAmount,
+        monthlyBondPayment,
+        totalHousingCost,
+
+        // Affordability metrics
+        housingToIncomeRatio,
+        disposableAfterHousing,
+        affordabilityStatus,
+
+        // Savings progress
+        currentSavings,
+        monthsToTarget,
+        projectedDate,
+        downPaymentShortfall,
+
+        // Living costs
+        currentRent,
+
+        // Monthly savings
+        monthlySavings,
+
+        // Scenario details
         standardAvailable,
         rentOutAvailable,
-        rentAndSaveAvailable,
-        accelerationMultiplier,
-        bondToGrossIncomeRatio,
-        bondToNetIncomeRatio,
-        standardScenario,
-        rentOutScenario,
-        timeSaved,
-        additionalInterestSaved,
-        rentAndSave
+        rentAndSaveAvailable
     }
 }
 
@@ -169,37 +438,27 @@ export function formatPercentage(value: number): string {
     return `${value.toFixed(1)}%`
 }
 
-// Helper function to generate data points for visualization
-export function generateVisualizationData(data: DashboardData, calculations: PropertyCalculations) {
-    const months = data.loanTermYears * 12
-    const monthlyRate = calculations.interestRate / 100 / 12
-    const points = []
+// Helper function to generate savings projection data
+export interface VisualizationPoint {
+    month: number
+    savingsBalance: number
+    targetAmount: number
+    monthlyContribution: number
+}
 
-    let standardLoanBalance = calculations.loanAmount
-    let standardAccelBalance = calculations.loanAmount
-    let rentOutBalance = calculations.loanAmount
+export function generateVisualizationData(data: DashboardData, calculations: PropertyCalculations): VisualizationPoint[] {
+    const points: VisualizationPoint[] = []
+    const monthsToProject = calculations.monthsToTarget
 
-    for (let month = 0; month <= months; month++) {
-        // Standard loan (no acceleration)
-        const standardInterest = standardLoanBalance * monthlyRate
-        const standardPrincipal = calculations.monthlyBondPayment - standardInterest
-        standardLoanBalance = Math.max(0, standardLoanBalance - standardPrincipal)
-
-        // Buy and Live In (with acceleration)
-        const standardAccelInterest = standardAccelBalance * monthlyRate
-        const standardAccelPrincipal = calculations.monthlyBondPayment - standardAccelInterest
-        standardAccelBalance = Math.max(0, standardAccelBalance - (standardAccelPrincipal + calculations.standardAvailable))
-
-        // Buy and Rent Out
-        const rentOutInterest = rentOutBalance * monthlyRate
-        const rentOutPrincipal = calculations.monthlyBondPayment - rentOutInterest
-        rentOutBalance = Math.max(0, rentOutBalance - (rentOutPrincipal + calculations.rentOutAvailable))
+    let savingsBalance = calculations.currentSavings
+    for (let month = 0; month <= monthsToProject; month++) {
+        savingsBalance += calculations.monthlySavings
 
         points.push({
             month,
-            standardLoanBalance,
-            standardAccelBalance,
-            rentOutBalance
+            savingsBalance,
+            targetAmount: data.downPayment,
+            monthlyContribution: calculations.monthlySavings
         })
     }
 

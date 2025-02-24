@@ -1,23 +1,21 @@
-import { Line } from 'react-chartjs-2'
+import { Bar } from 'react-chartjs-2'
 import type { ChartOptions } from 'chart.js'
 import {
     Chart as ChartJS,
     CategoryScale,
     LinearScale,
-    PointElement,
-    LineElement,
+    BarElement,
     Title,
     Tooltip,
     Legend
 } from 'chart.js'
 import { DashboardData, PropertyCalculations } from '../types/dashboard'
-import { generateVisualizationData, formatMoney } from '../utils/calculations'
+import { formatMoney } from '../utils/calculations'
 
 ChartJS.register(
     CategoryScale,
     LinearScale,
-    PointElement,
-    LineElement,
+    BarElement,
     Title,
     Tooltip,
     Legend
@@ -29,54 +27,39 @@ interface LoanChartProps {
 }
 
 export function LoanChart({ data, calculations }: LoanChartProps) {
-    const points = generateVisualizationData(data, calculations)
+    // Calculate total costs for each scenario
+    const currentCost = calculations.currentRent + data.personalExpenses + data.personalAllocation
+    const buyAndLiveCost = calculations.standardAvailable
+    const buyAndRentCost = calculations.rentOutAvailable
 
     const chartData = {
-        labels: points.map(p => `Year ${(p.month / 12).toFixed(1)}`),
+        labels: ['Current', 'Buy and Live', 'Buy and Rent Out'],
         datasets: [
             {
-                label: 'Standard Loan',
-                data: points.map(p => p.standardLoanBalance),
-                borderColor: '#6B7280', // gray-500
-                backgroundColor: 'rgba(107, 114, 128, 0.1)',
-                tension: 0.4,
-                fill: false
-            },
-            {
-                label: 'Buy and Live In',
-                data: points.map(p => p.standardAccelBalance),
-                borderColor: '#3B82F6', // blue-500
-                backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                tension: 0.4,
-                fill: false
-            },
-            {
-                label: 'Buy and Rent Out',
-                data: points.map(p => p.rentOutBalance),
-                borderColor: '#10B981', // green-500
-                backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                tension: 0.4,
-                fill: false
+                label: 'Monthly Costs',
+                data: [currentCost, buyAndLiveCost, buyAndRentCost],
+                backgroundColor: [
+                    'rgba(59, 130, 246, 0.5)', // blue-500
+                    'rgba(16, 185, 129, 0.5)', // green-500
+                    'rgba(168, 85, 247, 0.5)', // purple-500
+                ],
+                borderColor: [
+                    '#3B82F6', // blue-500
+                    '#10B981', // green-500
+                    '#A855F7', // purple-500
+                ],
+                borderWidth: 1
             }
         ]
     }
 
-    const options: ChartOptions<'line'> = {
+    const options = {
         responsive: true,
         maintainAspectRatio: false,
-        interaction: {
-            mode: 'index',
-            intersect: false,
-        },
+        indexAxis: 'y' as const,
         plugins: {
             legend: {
-                position: 'top',
-                labels: {
-                    color: '#F3F4F6', // text-gray-100
-                    font: {
-                        family: "'Inter', sans-serif"
-                    }
-                }
+                display: false
             },
             tooltip: {
                 backgroundColor: 'rgba(17, 24, 39, 0.8)', // bg-gray-900
@@ -89,9 +72,9 @@ export function LoanChart({ data, calculations }: LoanChartProps) {
                     family: "'Inter', sans-serif"
                 },
                 callbacks: {
-                    label: function (context) {
+                    label: function (context: any) {
                         if (typeof context.raw === 'number') {
-                            return `${context.dataset.label}: ${formatMoney(context.raw)}`
+                            return `Monthly Cost: ${formatMoney(context.raw)}`
                         }
                         return ''
                     }
@@ -100,19 +83,6 @@ export function LoanChart({ data, calculations }: LoanChartProps) {
         },
         scales: {
             x: {
-                type: 'category',
-                grid: {
-                    color: '#374151' // gray-700
-                },
-                ticks: {
-                    color: '#9CA3AF', // gray-400
-                    font: {
-                        family: "'Inter', sans-serif"
-                    }
-                }
-            },
-            y: {
-                type: 'linear' as const,
                 grid: {
                     color: '#374151' // gray-700
                 },
@@ -121,11 +91,22 @@ export function LoanChart({ data, calculations }: LoanChartProps) {
                     font: {
                         family: "'Inter', sans-serif"
                     },
-                    callback: function (value) {
+                    callback: function (value: any) {
                         if (typeof value === 'number') {
                             return formatMoney(value)
                         }
                         return ''
+                    }
+                }
+            },
+            y: {
+                grid: {
+                    display: false
+                },
+                ticks: {
+                    color: '#9CA3AF', // gray-400
+                    font: {
+                        family: "'Inter', sans-serif"
                     }
                 }
             }
@@ -134,9 +115,27 @@ export function LoanChart({ data, calculations }: LoanChartProps) {
 
     return (
         <div className="bg-gray-800 rounded-lg shadow-lg border border-gray-700 p-6 mb-8">
-            <h2 className="text-xl font-bold mb-6 text-blue-400">Loan Balance Over Time</h2>
-            <div className="w-full h-[400px]">
-                <Line data={chartData} options={options} />
+            <h2 className="text-xl font-bold mb-6 text-blue-400">Monthly Cost Comparison</h2>
+            <div className="w-full h-[200px]">
+                <Bar data={chartData} options={options} />
+            </div>
+            <div className="mt-4 grid grid-cols-3 gap-4 text-center">
+                <div>
+                    <div className="text-sm text-gray-400">Current</div>
+                    <div className="text-lg font-semibold text-blue-400">{formatMoney(currentCost)}</div>
+                </div>
+                <div>
+                    <div className="text-sm text-gray-400">Buy and Live</div>
+                    <div className="text-lg font-semibold text-green-400">
+                        + {formatMoney(buyAndLiveCost - currentCost)}
+                    </div>
+                </div>
+                <div>
+                    <div className="text-sm text-gray-400">Buy and Rent Out</div>
+                    <div className="text-lg font-semibold text-purple-400">
+                        + {formatMoney(buyAndRentCost - currentCost)}
+                    </div>
+                </div>
             </div>
         </div>
     )
